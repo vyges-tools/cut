@@ -1,0 +1,27 @@
+[package]
+name = "vyges-cut"
+version = "0.1.46"
+edition = "2021"
+description = "The part of a design a re-synthesis works on: extracted from the timing graph, written out to ABC as BLIF or a mapped network, and the result put back."
+license = "Apache-2.0"
+authors = ["Vyges <https://vyges.com/contact>"]
+homepage = "https://vyges.com"
+repository = "https://github.com/vyges-tools/cut"
+
+[dependencies]
+# Liberty: cell functions, pins and timing tables for the ABC library.
+vyges-sta = { git = "https://github.com/vyges-tools/sta.git", branch = "main" }
+# ABC, in process: the library handed to it and the networks read back.
+vyges-abc-lib = { git = "https://github.com/vyges-tools/abc-lib", branch = "main" }
+
+[lib]
+name = "vyges_cut"
+path = "src/lib.rs"
+
+# Local development against the sibling checkouts. Patches are only honored from the root
+# manifest, so this is a no-op for downstream consumers pulling us by git.
+[patch."https://github.com/vyges-tools/sta.git"]
+vyges-sta = { path = "../vyges-tools-sta" }
+
+[patch."https://github.com/vyges-tools/abc-lib"]
+vyges-abc-lib = { path = "../vyges-tools-abc-lib" }

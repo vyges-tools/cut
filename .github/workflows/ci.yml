@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: Apache-2.0
+# Build & test on every push to main and on pull requests (plus manual dispatch).
+#
+# 🔴 PUSH-TRIGGERED ON PURPOSE. Our release tooling derives the set of gating workflows from each
+# repo's own `on:` triggers and requires every one green at HEAD, so a repo with no push-triggered
+# workflow is reported as "not gated" — which reads like a pass and is actually "nobody looked".
+#
+# A library: it links the prebuilt archive of ABC, fetched for the abc-lib checked out beside it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vyges-tools-cut
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: vyges-tools-cut
+      # Every [patch] path in Cargo.toml must resolve: a missing one is a hard `failed to load
+      # source`, not a fall-back to the git source.
+      - name: Sibling checkouts
+        working-directory: .
+        run: |
+          set -eu
+          for r in sta abc-lib; do
+            git clone -q --depth 1 --branch main "https://github.com/vyges-tools/$r" "vyges-tools-$r"
+            echo "vyges-tools-$r @ main $(git -C vyges-tools-$r rev-parse --short HEAD)"
+          done
+      - name: Prebuilt archives
+        run: bash ../vyges-tools-abc-lib/scripts/fetch-bundle.sh "$RUNNER_TEMP/abc" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Test
+        run: cargo test --verbose
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  lint:
+    name: fmt-free lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # ⛔ NO `cargo fmt --check`: these crates are hand-formatted.
+      - name: No machine-specific paths in tracked files
+        run: |
+          if git grep -nE '/home/[a-z]+/|/Users/[a-z]+/' -- . ; then
+            echo "::error::a tracked file contains an absolute developer path"
+            exit 1
+          fi
+          echo "no machine-specific paths"
