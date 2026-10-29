@@ -20,7 +20,7 @@ permissions:
 jobs:
   build-test:
     name: build & test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}
     defaults:
       run:
         working-directory: vyges-tools-cut
@@ -50,7 +50,7 @@ jobs:
 
   lint:
     name: fmt-free lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}
     steps:
       - uses: actions/checkout@v7
       # ⛔ NO `cargo fmt --check`: these crates are hand-formatted.
