@@ -1,6 +1,6 @@
 [package]
 name = "vyges-cut"
-version = "0.1.50"
+version = "0.1.51"
 edition = "2021"
 description = "The part of a design a re-synthesis works on: extracted from the timing graph, written out to ABC as BLIF or a mapped network, and the result put back."
 license = "Apache-2.0"
