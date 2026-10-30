@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "vyges-abc-lib"
-version = "0.1.49"
+version = "0.1.50"
 
 [[package]]
 name = "vyges-cut"
-version = "0.1.49"
+version = "0.1.50"
 dependencies = [
  "vyges-abc-lib",
  "vyges-sta",
@@ -16,4 +16,4 @@ dependencies = [
 
 [[package]]
 name = "vyges-sta"
-version = "0.1.49"
+version = "0.1.50"
