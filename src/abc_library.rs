@@ -63,13 +63,22 @@ fn is_output(p: &Port) -> bool {
 }
 
 /// `isCompatibleWithAbc`: not dont-use, combinational (`IsCombinational`: not a clock gate, pad,
-/// macro, sequential, level shifter, isolation cell or memory), at least one output, and no port
-/// but inputs and outputs (power and ground pins are kept apart and do not count).
+/// macro, sequential, level shifter, isolation cell or memory), at least one output, no port but
+/// inputs and outputs (power and ground pins are kept apart and do not count), and
+/// [`has_output_without_function`] false.
 pub fn is_compatible(cell: &Cell, dont_use: bool) -> bool {
     !dont_use
         && !(cell.is_clock_gate || cell.is_pad || cell.is_macro || cell.is_sequential() || cell.is_level_shifter || cell.is_isolation_cell || cell.is_memory)
         && cell.ports.iter().any(is_output)
         && cell.ports.iter().all(|p| is_input(p) || is_output(p))
+        && !has_output_without_function(cell)
+}
+
+/// `HasOutputWithoutFunction`, the pin's rule (upstream 63ad24d1b9): an output port with no
+/// function (a power-gating filler, say) leaves the cell out of the ABC library — before, the
+/// build stopped at CUT-0049 even when the design did not use the cell. Unchanged after the pin.
+pub fn has_output_without_function(cell: &Cell) -> bool {
+    cell.ports.iter().any(|p| is_output(p) && p.function.is_none())
 }
 
 /// The standard-cell library, its gate library (until a network takes it), and the cell facts
@@ -336,7 +345,7 @@ pub(crate) mod test_lib {
         }"#;
 
     pub(crate) fn tie_library(abc: &Abc, l: &Library) -> AbcLibrary {
-        build(abc, l, "ties.lib", &[CornerLib { index: 0, lib: l }], &|_, c| c == "NOFUNC", &mut |_| {}).unwrap()
+        build(abc, l, "ties.lib", &[CornerLib { index: 0, lib: l }], &|_, _| false, &mut |_| {}).unwrap()
     }
 }
 
@@ -362,7 +371,8 @@ mod tests {
     }
 
     /// Rule (`isCompatibleWithAbc`): dont-use, sequential, macro, memory, pad, and cells with a
-    /// tristate output or no output are left out; a plain gate is kept.
+    /// tristate output, no output, or an output without a function are left out; a plain gate is
+    /// kept. The library of ties builds with such a cell in it (NOFUNC, not dont-use).
     #[test]
     fn only_plain_combinational_cells_are_compatible() {
         let l = lib(r#"library (l) {
@@ -372,11 +382,13 @@ mod tests {
             cell (N) { pin (A) { direction : input ; } }
             cell (F) { ff (IQ, IQN) { clocked_on : "A" ; next_state : "A" ; } pin (A) { direction : input ; } pin (Q) { direction : output ; function : "IQ" ; } }
             cell (B) { pin (A) { direction : inout ; } pin (Y) { direction : output ; function : "A" ; } }
+            cell (Z) { pin (A) { direction : input ; } pin (Y) { direction : output ; } }
             }"#);
         let ok = |n: &str, du: bool| is_compatible(&l.cells[n], du);
         assert!(ok("G", false));
         assert!(!ok("G", true));
-        for n in ["T", "M", "N", "F", "B"] {
+        // `HasOutputWithoutFunction` (upstream 63ad24d1b9): Z's output has no function.
+        for n in ["T", "M", "N", "F", "B", "Z"] {
             assert!(!ok(n, false), "{n}");
         }
     }
