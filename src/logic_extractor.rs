@@ -141,7 +141,7 @@ pub fn get_cut_vertices(view: &View, endpoints: &[usize], lib: &AbcLibrary) -> B
 
 /// `AddMissingVertices`: every input terminal of the instance of each non-end-point cut vertex
 /// joins the cut, and, where the terminal is constant, the tie cell driving it (the net's one
-/// driver, CUT-0047 otherwise) when its cell is one of the library's constant cells.
+/// driver, CUT-0047 otherwise) when the driving PORT is a constant port ([`is_constant_driver`]).
 pub fn add_missing_vertices(view: &View, endpoints: &[usize], cut: &BTreeSet<usize>, lib: &AbcLibrary) -> Result<BTreeSet<usize>, String> {
     let ends: BTreeSet<usize> = endpoints.iter().copied().collect();
     let mut out = cut.clone();
@@ -169,7 +169,7 @@ pub fn add_missing_vertices(view: &View, endpoints: &[usize], cut: &BTreeSet<usi
             let Some(driver_inst) = view.pin_inst(&drivers[0]) else {
                 return Err(format!("resynth: {pin} is constant from port {} (the top instance's cell) — not modelled", drivers[0]));
             };
-            if !lib.is_const_cell(&view.d.inst_master(&driver_inst)) {
+            if !is_constant_driver(view, &driver_inst, &drivers[0], lib) {
                 continue;
             }
             if let Some(c) = view.vertex(&drivers[0]) {
@@ -178,6 +178,19 @@ pub fn add_missing_vertices(view: &View, endpoints: &[usize], cut: &BTreeSet<usi
         }
     }
     Ok(out)
+}
+
+/// `GetConstantVertexIfExists`'s test, the pin's rule (upstream b3c8f8befe): the driver PIN's port
+/// is the cell's constant-1 or constant-0 port ([`is_constant_port`]).
+fn is_constant_driver(view: &View, driver_inst: &str, driver_pin: &str, lib: &AbcLibrary) -> bool {
+    is_constant_port(lib, &view.d.inst_master(driver_inst), &driver_pin[driver_inst.len() + 1..])
+}
+
+/// `IsConst1Port || IsConst0Port`: a PORT's constness — not "the cell is a constant cell"
+/// (`IsConstCell`, dropped in 76818899c9), which a multi-output tie answers for a port that is not
+/// its recorded constant port. Unchanged after the pin (4155ac31..a6e7f507).
+pub fn is_constant_port(lib: &AbcLibrary, cell: &str, port: &str) -> bool {
+    lib.is_const1_port(cell, port) || lib.is_const0_port(cell, port)
 }
 
 /// `GetPrimaryInputs`: each non-end-point cut vertex on a net with drivers, none of them in the
@@ -244,4 +257,24 @@ pub fn filter_undriven_outputs(view: &View, outputs: &BTreeSet<usize>, instances
 /// `ConvertIoPinsToNets`: the nets of the pins (CUT-0048 for a pin on no net).
 pub fn convert_io_pins_to_nets(view: &View, pins: &BTreeSet<usize>) -> Result<BTreeSet<String>, String> {
     pins.iter().map(|&v| view.net_of(v).ok_or_else(|| format!("[ERROR CUT-0048] primary input pin {} connected to null net", view.f.pin[v]))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::abc_library::test_lib;
+    use vyges_abc_lib::Abc;
+
+    /// Rule (`GetConstantVertexIfExists`, upstream b3c8f8befe): a tie driver joins the cut when
+    /// ITS port is the cell's constant port. TIELL's two constant-0 outputs record only the first
+    /// (L1), so a pin driven by L2 is not a constant driver, though the cell is a constant cell.
+    #[test]
+    fn a_constant_driver_is_asked_by_its_port() {
+        let l = test_lib::lib(test_lib::TIES);
+        let abc = Abc::start().unwrap();
+        let t = test_lib::tie_library(&abc, &l);
+        assert!(is_constant_port(&t, "TIEHL", "HI") && is_constant_port(&t, "TIEHL", "LO"));
+        assert!(is_constant_port(&t, "TIELL", "L1") && !is_constant_port(&t, "TIELL", "L2"));
+        assert!(!is_constant_port(&t, "INV", "Y"));
+    }
 }

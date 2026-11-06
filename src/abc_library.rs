@@ -105,11 +105,6 @@ impl AbcLibrary {
         self.const1.get(cell).is_some_and(|p| p == port)
     }
 
-    /// `IsConstCell` as it stood at f17d7d8340: the cell has a constant port of either value.
-    pub fn is_const_cell(&self, name: &str) -> bool {
-        self.const1.contains_key(name) || self.const0.contains_key(name)
-    }
-
     pub fn constant_zero_cell(&self) -> Option<&(String, String)> {
         self.const0_cell.as_ref()
     }
@@ -308,6 +303,43 @@ fn surface(t: &Table, lib: &Library) -> Result<SurfaceData, String> {
     Ok((i0, i1, v))
 }
 
+/// A small library of ties for the crate's tests.
+#[cfg(test)]
+pub(crate) mod test_lib {
+    use super::*;
+
+    pub(crate) fn lib(text: &str) -> Library {
+        Library::read(&vyges_sta::liberty_parse::parse(text).unwrap()).unwrap()
+    }
+
+    /// A library of two-output ties and an inverter, as `build` reads it.
+    pub(crate) const TIES: &str = r#"library (ties) {
+        time_unit : "1ns" ; capacitive_load_unit (1, ff) ; leakage_power_unit : "1nW" ;
+        lu_table_template (t) { variable_1 : input_net_transition ; variable_2 : total_output_net_capacitance ; index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; }
+        cell (TIEHL) { area : 2.0 ; cell_leakage_power : 1.0 ;
+            pin (HI) { direction : output ; function : "1" ; }
+            pin (LO) { direction : output ; function : "0" ; } }
+        cell (TIELL) { area : 3.0 ; cell_leakage_power : 1.0 ;
+            pin (L1) { direction : output ; function : "0" ; }
+            pin (L2) { direction : output ; function : "0" ; } }
+        cell (INV) { area : 1.0 ; cell_leakage_power : 1.0 ;
+            pin (A) { direction : input ; capacitance : 1.0 ; }
+            pin (Y) { direction : output ; function : "!A" ;
+                timing () { related_pin : "A" ; timing_sense : negative_unate ;
+                    cell_rise (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
+                    cell_fall (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
+                    rise_transition (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
+                    fall_transition (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; } } } }
+        cell (NOFUNC) { area : 1.0 ; cell_leakage_power : 1.0 ;
+            pin (A) { direction : input ; capacitance : 1.0 ; }
+            pin (Z) { direction : output ; } }
+        }"#;
+
+    pub(crate) fn tie_library(abc: &Abc, l: &Library) -> AbcLibrary {
+        build(abc, l, "ties.lib", &[CornerLib { index: 0, lib: l }], &|_, c| c == "NOFUNC", &mut |_| {}).unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,41 +381,14 @@ mod tests {
         }
     }
 
-    /// A library of two-output ties and an inverter, as `build` reads it.
-    const TIES: &str = r#"library (ties) {
-        time_unit : "1ns" ; capacitive_load_unit (1, ff) ; leakage_power_unit : "1nW" ;
-        lu_table_template (t) { variable_1 : input_net_transition ; variable_2 : total_output_net_capacitance ; index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; }
-        cell (TIEHL) { area : 2.0 ; cell_leakage_power : 1.0 ;
-            pin (HI) { direction : output ; function : "1" ; }
-            pin (LO) { direction : output ; function : "0" ; } }
-        cell (TIELL) { area : 3.0 ; cell_leakage_power : 1.0 ;
-            pin (L1) { direction : output ; function : "0" ; }
-            pin (L2) { direction : output ; function : "0" ; } }
-        cell (INV) { area : 1.0 ; cell_leakage_power : 1.0 ;
-            pin (A) { direction : input ; capacitance : 1.0 ; }
-            pin (Y) { direction : output ; function : "!A" ;
-                timing () { related_pin : "A" ; timing_sense : negative_unate ;
-                    cell_rise (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
-                    cell_fall (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
-                    rise_transition (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
-                    fall_transition (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; } } } }
-        cell (NOFUNC) { area : 1.0 ; cell_leakage_power : 1.0 ;
-            pin (A) { direction : input ; capacitance : 1.0 ; }
-            pin (Z) { direction : output ; } }
-        }"#;
-
-    fn tie_library(abc: &Abc, l: &Library) -> AbcLibrary {
-        build(abc, l, "ties.lib", &[CornerLib { index: 0, lib: l }], &|_, c| c == "NOFUNC", &mut |_| {}).unwrap()
-    }
-
     /// Rule (`InitializeConstGates`, upstream f17d7d8340): each OUTPUT of a no-input cell is tested,
     /// not pin 0 for every output — sky130hd `conb` (HI then LO) has a constant-0 port LO, and it is
     /// not a constant-1 port. Two constant-0 outputs keep the FIRST (`unordered_map::insert`).
     #[test]
     fn constness_is_a_ports_and_the_first_constant_port_is_kept() {
-        let l = lib(TIES);
+        let l = test_lib::lib(test_lib::TIES);
         let abc = Abc::start().unwrap();
-        let t = tie_library(&abc, &l);
+        let t = test_lib::tie_library(&abc, &l);
         assert!(t.is_const1_port("TIEHL", "HI") && !t.is_const0_port("TIEHL", "HI"));
         assert!(t.is_const0_port("TIEHL", "LO") && !t.is_const1_port("TIEHL", "LO"));
         assert!(t.is_const0_port("TIELL", "L1") && !t.is_const0_port("TIELL", "L2"));
