@@ -90,24 +90,37 @@ fn gate_by_name(mio: GateLib) -> HashMap<String, usize> {
     (0..mio.gate_count()).filter_map(|g| mio.gate_name(g).map(|n| (n, g))).collect()
 }
 
-/// `CreateStandardCells`: per cut instance (by id) a node of its cell's gate — a constant cell
-/// as the gate library's constant gate — named after the instance (CUT-0024 for a cell with no
-/// gate).
+/// `CreateStandardCells`, the pin's rule (upstream f17d7d8340): per cut instance (by id), per
+/// CONNECTED output terminal in terminal order (on a net, direction output), a node of the cell's
+/// gate named after the instance. The port decides constness: a constant-0 (constant-1) port makes
+/// the node the gate library's constant gate. A second connected output is CUT-0050 (named with the
+/// cell name as it stands then); an instance with no connected output gets no node; CUT-0024 for a
+/// cell with no gate. Unchanged after the pin (4155ac31..a6e7f507).
 pub fn create_standard_cells(ntk: &mut Network, cut: &LogicCut, lib: &AbcLibrary, mio: GateLib, view: &View) -> Result<BTreeMap<String, usize>, String> {
     let gates = gate_by_name(mio);
     let mut map = BTreeMap::new();
     for inst in by_id(&cut.instances, &|i| view.d.inst_id(i)) {
         let mut cell = view.d.inst_master(&inst);
-        if lib.is_const0_cell(&cell) {
-            cell = mio.special(Special::Const0).and_then(|g| mio.gate_name(g)).unwrap_or_default();
+        let mut connected_outputs = 0;
+        for it in view.d.inst_iterms(&inst) {
+            if it.net.is_none() || !view.is_output(&inst, &it.mterm) {
+                continue;
+            }
+            connected_outputs += 1;
+            if connected_outputs > 1 {
+                return Err(format!("[ERROR CUT-0050] Instance {inst} of type {cell} has more than one output connected. Multioutput cells with more than one output used are not supported."));
+            }
+            if lib.is_const0_port(&cell, &it.mterm) {
+                cell = mio.special(Special::Const0).and_then(|g| mio.gate_name(g)).unwrap_or_default();
+            }
+            if lib.is_const1_port(&cell, &it.mterm) {
+                cell = mio.special(Special::Const1).and_then(|g| mio.gate_name(g)).unwrap_or_default();
+            }
+            let gate = *gates.get(&cell).ok_or_else(|| format!("[ERROR CUT-0024] cell: {cell} was not found in the ABC library. Please report this internal error."))?;
+            let node = ntk.create_node(gate).map_err(abc_err)?;
+            ntk.assign_name(node, &inst).map_err(abc_err)?;
+            map.insert(inst.clone(), node);
         }
-        if lib.is_const1_cell(&cell) {
-            cell = mio.special(Special::Const1).and_then(|g| mio.gate_name(g)).unwrap_or_default();
-        }
-        let gate = *gates.get(&cell).ok_or_else(|| format!("[ERROR CUT-0024] cell: {cell} was not found in the ABC library. Please report this internal error."))?;
-        let node = ntk.create_node(gate).map_err(abc_err)?;
-        ntk.assign_name(node, &inst).map_err(abc_err)?;
-        map.insert(inst, node);
     }
     Ok(map)
 }

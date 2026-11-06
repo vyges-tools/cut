@@ -7,7 +7,7 @@
 //! [`populate_from_liberty`] over the corner's cells, then ABC's normalize / hash / link, and
 //! derives the gate library.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use vyges_abc_lib::{Abc, CellLib, GateLib, Sense, Surface};
 use vyges_sta::func_expr::FuncExpr;
@@ -79,10 +79,10 @@ pub struct AbcLibrary {
     mio: Option<GateLib>,
     /// `IsSupportedCell`: cells with exactly one output.
     supported: BTreeSet<String>,
-    /// `InitializeConstGates`: cells with no inputs whose first pin's truth table is all zeros /
-    /// all ones.
-    const0: BTreeSet<String>,
-    const1: BTreeSet<String>,
+    /// `InitializeConstGates`: per cell with no inputs, its constant-0 / constant-1 output port
+    /// (see [`initialize_const_gates`]).
+    const0: BTreeMap<String, String>,
+    const1: BTreeMap<String, String>,
     /// `ConstantZeroCell` / `ConstantOneCell`: the smallest-area such cell (the first of equal
     /// areas) and its output pin.
     const0_cell: Option<(String, String)>,
@@ -94,16 +94,20 @@ impl AbcLibrary {
         self.supported.contains(name)
     }
 
-    pub fn is_const0_cell(&self, name: &str) -> bool {
-        self.const0.contains(name)
+    /// `IsConst0Port` / `IsConst1Port` (upstream f17d7d8340): constness is a PORT's, not the
+    /// cell's — `port` is the one constant-0 (constant-1) output recorded for `cell`. A cell-level
+    /// question (`IsConstCell`) no longer exists (76818899c9).
+    pub fn is_const0_port(&self, cell: &str, port: &str) -> bool {
+        self.const0.get(cell).is_some_and(|p| p == port)
     }
 
-    pub fn is_const1_cell(&self, name: &str) -> bool {
-        self.const1.contains(name)
+    pub fn is_const1_port(&self, cell: &str, port: &str) -> bool {
+        self.const1.get(cell).is_some_and(|p| p == port)
     }
 
+    /// `IsConstCell` as it stood at f17d7d8340: the cell has a constant port of either value.
     pub fn is_const_cell(&self, name: &str) -> bool {
-        self.is_const1_cell(name) || self.is_const0_cell(name)
+        self.const1.contains_key(name) || self.const0.contains_key(name)
     }
 
     pub fn constant_zero_cell(&self) -> Option<&(String, String)> {
@@ -152,18 +156,7 @@ pub fn build(abc: &Abc, default: &Library, default_path: &str, corner: &[CornerL
     let mio = cells.derive_genlib().map_err(|e| e.to_string())?;
     let info = cells.cells();
     let supported = info.iter().filter(|c| c.outputs == 1).map(|c| c.name.clone()).collect();
-    let (mut const0, mut const1) = (BTreeSet::new(), BTreeSet::new());
-    for (i, c) in info.iter().enumerate().filter(|(_, c)| c.inputs == 0) {
-        match cells.pin_truth(i, 0) {
-            Some(0) => {
-                const0.insert(c.name.clone());
-            }
-            Some(u64::MAX) => {
-                const1.insert(c.name.clone());
-            }
-            _ => {}
-        }
-    }
+    let (const0, const1) = initialize_const_gates(&cells);
     let constant_cell = |value: u64| {
         let mut best: Option<(f32, String, String)> = None;
         for (i, c) in info.iter().enumerate().filter(|(_, c)| c.inputs == 0) {
@@ -177,6 +170,31 @@ pub fn build(abc: &Abc, default: &Library, default_path: &str, corner: &[CornerL
     };
     let (const0_cell, const1_cell) = (constant_cell(0), constant_cell(u64::MAX));
     Ok(AbcLibrary { cells, mio: Some(mio), supported, const0, const1, const0_cell, const1_cell })
+}
+
+/// `InitializeConstGates`, the pin's rule (upstream f17d7d8340, "multi-output TIEs using wrong
+/// output port"): per cell with no inputs, in library order, EACH output pin's truth table (its
+/// first word) — all zeros records the pin as the cell's constant-0 port, all ones as its
+/// constant-1 port. The record is `unordered_map::insert`: the FIRST such pin of a cell is kept.
+/// Before the fix every output read pin 0, so sky130hd `conb` (HI, then LO) was constant-1 only
+/// and its LO went to ABC as a constant 1. Unchanged after the pin (4155ac31..a6e7f507).
+pub fn initialize_const_gates(cells: &CellLib) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let (mut const0, mut const1) = (BTreeMap::new(), BTreeMap::new());
+    for (i, c) in cells.cells().iter().enumerate().filter(|(_, c)| c.inputs == 0) {
+        for pin in c.inputs..c.inputs + c.outputs {
+            let name = || cells.pin_name(i, pin).unwrap_or_default();
+            match cells.pin_truth(i, pin) {
+                Some(0) => {
+                    const0.entry(c.name.clone()).or_insert_with(name);
+                }
+                Some(u64::MAX) => {
+                    const1.entry(c.name.clone()).or_insert_with(name);
+                }
+                _ => {}
+            }
+        }
+    }
+    (const0, const1)
 }
 
 /// `PopulateLibraryDetails`: the library's name and file name, units, no wire loads, and its
@@ -329,5 +347,49 @@ mod tests {
         for n in ["T", "M", "N", "F", "B"] {
             assert!(!ok(n, false), "{n}");
         }
+    }
+
+    /// A library of two-output ties and an inverter, as `build` reads it.
+    const TIES: &str = r#"library (ties) {
+        time_unit : "1ns" ; capacitive_load_unit (1, ff) ; leakage_power_unit : "1nW" ;
+        lu_table_template (t) { variable_1 : input_net_transition ; variable_2 : total_output_net_capacitance ; index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; }
+        cell (TIEHL) { area : 2.0 ; cell_leakage_power : 1.0 ;
+            pin (HI) { direction : output ; function : "1" ; }
+            pin (LO) { direction : output ; function : "0" ; } }
+        cell (TIELL) { area : 3.0 ; cell_leakage_power : 1.0 ;
+            pin (L1) { direction : output ; function : "0" ; }
+            pin (L2) { direction : output ; function : "0" ; } }
+        cell (INV) { area : 1.0 ; cell_leakage_power : 1.0 ;
+            pin (A) { direction : input ; capacitance : 1.0 ; }
+            pin (Y) { direction : output ; function : "!A" ;
+                timing () { related_pin : "A" ; timing_sense : negative_unate ;
+                    cell_rise (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
+                    cell_fall (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
+                    rise_transition (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; }
+                    fall_transition (t) { index_1 ("0.01, 0.1") ; index_2 ("1, 10") ; values ("0.01, 0.02", "0.015, 0.025") ; } } } }
+        cell (NOFUNC) { area : 1.0 ; cell_leakage_power : 1.0 ;
+            pin (A) { direction : input ; capacitance : 1.0 ; }
+            pin (Z) { direction : output ; } }
+        }"#;
+
+    fn tie_library(abc: &Abc, l: &Library) -> AbcLibrary {
+        build(abc, l, "ties.lib", &[CornerLib { index: 0, lib: l }], &|_, c| c == "NOFUNC", &mut |_| {}).unwrap()
+    }
+
+    /// Rule (`InitializeConstGates`, upstream f17d7d8340): each OUTPUT of a no-input cell is tested,
+    /// not pin 0 for every output — sky130hd `conb` (HI then LO) has a constant-0 port LO, and it is
+    /// not a constant-1 port. Two constant-0 outputs keep the FIRST (`unordered_map::insert`).
+    #[test]
+    fn constness_is_a_ports_and_the_first_constant_port_is_kept() {
+        let l = lib(TIES);
+        let abc = Abc::start().unwrap();
+        let t = tie_library(&abc, &l);
+        assert!(t.is_const1_port("TIEHL", "HI") && !t.is_const0_port("TIEHL", "HI"));
+        assert!(t.is_const0_port("TIEHL", "LO") && !t.is_const1_port("TIEHL", "LO"));
+        assert!(t.is_const0_port("TIELL", "L1") && !t.is_const0_port("TIELL", "L2"));
+        assert!(!t.is_const0_port("INV", "Y") && !t.is_const1_port("INV", "Y"));
+        // `FindConstantCell` (unchanged): the smallest-area cell with such a port, and that port.
+        assert_eq!(t.constant_zero_cell(), Some(&("TIEHL".to_string(), "LO".to_string())));
+        assert_eq!(t.constant_one_cell(), Some(&("TIEHL".to_string(), "HI".to_string())));
     }
 }
