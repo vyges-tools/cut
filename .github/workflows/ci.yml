@@ -39,6 +39,8 @@ jobs:
             echo "vyges-tools-$r @ main $(git -C vyges-tools-$r rev-parse --short HEAD)"
           done
       - name: Prebuilt archives
+        env:
+          GH_TOKEN: ${{ github.token }}   # authenticated bundle download (fetch-bundle.sh)
         run: bash ../vyges-tools-abc-lib/scripts/fetch-bundle.sh "$RUNNER_TEMP/abc" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
