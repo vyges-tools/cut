@@ -1,5 +1,7 @@
 # vyges-cut
 
+**[Download Loom](https://vyges.com/products/vyges-cli/#install)** · install the free [Vyges CLI](https://vyges.com/products/vyges-cli/), then `vyges install loom`
+
 The part of a design a re-synthesis works on, and its way out to and back from ABC:
 
 - **extract** the cut from the timing graph: the logic behind a set of end points, bounded by
